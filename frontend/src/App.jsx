@@ -25,6 +25,16 @@ export default function App() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    // Dismiss the inline HTML splash once React has painted its first frame
+    const splash = document.getElementById('splash')
+    if (splash) {
+      splash.classList.add('splash-out')
+      const t = setTimeout(() => splash.remove(), 450)
+      return () => clearTimeout(t)
+    }
+  }, [])
+
+  useEffect(() => {
     try {
       const stored = localStorage.getItem(HISTORY_KEY)
       if (stored) setHistory(JSON.parse(stored))
