@@ -35,7 +35,7 @@ export default function HistorySidebar({ isOpen, onClose, history, onSelect }) {
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 28, stiffness: 280 }}
-            className="fixed right-0 top-0 bottom-0 w-80 bg-[#09091a] border-l border-white/[0.06] z-50 flex flex-col"
+            className="fixed right-0 top-0 bottom-0 w-full sm:w-80 bg-[#09091a] border-l border-white/[0.06] z-50 flex flex-col"
           >
             <div className="flex items-center justify-between px-4 py-4 border-b border-white/[0.06]">
               <div className="flex items-center gap-2">
@@ -47,13 +47,13 @@ export default function HistorySidebar({ isOpen, onClose, history, onSelect }) {
                 onClick={onClose}
                 whileHover={{ scale: 1.1 }}
                 whileTap={{ scale: 0.9 }}
-                className="p-1.5 rounded-lg text-white/35 hover:text-white hover:bg-white/[0.06] transition-colors"
+                className="flex items-center justify-center w-9 h-9 rounded-xl text-white/35 hover:text-white hover:bg-white/[0.06] transition-colors"
               >
                 <X className="w-4 h-4" />
               </motion.button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <div className="flex-1 overflow-y-auto scroll-ios p-3 pb-safe space-y-2">
               {history.length === 0 ? (
                 <motion.p
                   initial={{ opacity: 0 }}
@@ -103,7 +103,7 @@ export default function HistorySidebar({ isOpen, onClose, history, onSelect }) {
                       <p className="text-white/50 text-xs leading-snug line-clamp-2">
                         {entry.results?.prompts?.[0]?.text?.slice(0, 80)}…
                       </p>
-                      <p className="text-white/20 text-[10px] mt-1">{timeAgo(entry.timestamp)}</p>
+                      <p className="text-white/20 text-xs mt-1">{timeAgo(entry.timestamp)}</p>
                     </div>
                   </motion.button>
                 ))

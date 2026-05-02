@@ -93,8 +93,8 @@ export default function App() {
       <div className="relative z-10 flex flex-col min-h-screen">
         <Header historyCount={history.length} onHistoryToggle={() => setShowHistory((s) => !s)} />
 
-        <main className="flex-1 px-4 md:px-8 py-6 max-w-7xl mx-auto w-full">
-          <div className="flex flex-col lg:flex-row gap-6">
+        <main className="flex-1 px-4 md:px-8 py-4 md:py-6 pb-safe max-w-7xl mx-auto w-full">
+          <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
             {/* Controls column */}
             <div className="w-full lg:w-[480px] flex-shrink-0 space-y-3">
               <ImageUploader image={image} onChange={setImage} />

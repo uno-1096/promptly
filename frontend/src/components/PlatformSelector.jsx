@@ -55,7 +55,7 @@ export default function PlatformSelector({ value, onChange }) {
                 <Icon className="w-3.5 h-3.5 text-white" />
               </div>
               <p className="relative text-white text-xs font-semibold leading-tight">{name}</p>
-              <p className="relative text-white/35 text-[10px] mt-0.5 leading-tight">{tagline}</p>
+              <p className="relative text-white/35 text-[11px] mt-0.5 leading-tight">{tagline}</p>
             </motion.button>
           )
         })}

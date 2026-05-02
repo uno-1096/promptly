@@ -66,9 +66,9 @@ export default function ImageUploader({ image, onChange }) {
                 onClick={handleRemove}
                 whileHover={{ scale: 1.1 }}
                 whileTap={{ scale: 0.9 }}
-                className="p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-white/70 hover:text-white transition-colors"
+                className="flex items-center justify-center w-9 h-9 rounded-xl bg-black/60 hover:bg-black/80 text-white/70 hover:text-white transition-colors"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-4 h-4" />
               </motion.button>
             </div>
           </motion.div>
@@ -98,11 +98,10 @@ export default function ImageUploader({ image, onChange }) {
             </motion.div>
             <div className="text-center">
               <p className="text-white/50 text-sm font-medium">
-                {isDragging ? 'Drop it here' : 'Drop image here'}
+                {isDragging ? 'Drop it here' : 'Tap or drop to upload'}
               </p>
-              <p className="text-white/25 text-xs mt-1">or click to browse</p>
+              <p className="text-white/25 text-xs mt-1">PNG, JPG, WebP, GIF</p>
             </div>
-            <p className="text-white/15 text-xs">PNG, JPG, WebP, GIF</p>
           </motion.div>
         )}
       </AnimatePresence>

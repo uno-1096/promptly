@@ -23,7 +23,7 @@ export default function StyleModifiers({ value, onChange }) {
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8 }}
               onClick={() => onChange('')}
-              className="text-white/25 hover:text-white/50 text-xs transition-colors"
+              className="px-2 py-1 text-white/25 hover:text-white/50 text-xs transition-colors rounded-lg"
             >
               Clear
             </motion.button>
@@ -39,7 +39,7 @@ export default function StyleModifiers({ value, onChange }) {
               onClick={() => onChange(selected ? '' : id)}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all duration-200 ${
+              className={`px-4 py-2 rounded-full border text-xs font-medium transition-all duration-200 ${
                 selected
                   ? 'border-violet-500/50 bg-violet-500/20 text-violet-200 shadow-sm shadow-violet-500/20'
                   : 'border-white/[0.08] bg-white/[0.03] text-white/45 hover:text-white/65 hover:border-white/15'

@@ -29,7 +29,7 @@ export default function Header({ historyCount, onHistoryToggle }) {
           onClick={onHistoryToggle}
           whileHover={{ scale: 1.03 }}
           whileTap={{ scale: 0.97 }}
-          className="relative flex items-center gap-2 px-3 py-2 rounded-xl glass-panel-hover text-white/50 hover:text-white/80 text-sm font-medium"
+          className="relative flex items-center gap-2 px-3 py-2.5 min-h-[44px] rounded-xl glass-panel-hover text-white/50 hover:text-white/80 text-sm font-medium"
         >
           <Clock className="w-4 h-4" />
           <span className="hidden sm:inline">History</span>

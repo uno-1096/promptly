@@ -44,18 +44,18 @@ export default function PromptCard({ prompt, index, delay = 0 }) {
           <motion.button
             onClick={toggleEdit}
             whileTap={{ scale: 0.88 }}
-            className={`p-1.5 rounded-lg transition-colors ${
+            className={`flex items-center justify-center w-9 h-9 rounded-xl transition-colors ${
               editing
                 ? 'bg-violet-500/20 text-violet-300'
                 : 'text-white/25 hover:text-white/55 hover:bg-white/[0.05]'
             }`}
           >
-            <Edit3 className="w-3.5 h-3.5" />
+            <Edit3 className="w-4 h-4" />
           </motion.button>
           <motion.button
             onClick={handleCopy}
             whileTap={{ scale: 0.88 }}
-            className="p-1.5 rounded-lg text-white/25 hover:text-white/55 hover:bg-white/[0.05] transition-colors"
+            className="flex items-center justify-center w-9 h-9 rounded-xl text-white/25 hover:text-white/55 hover:bg-white/[0.05] transition-colors"
           >
             <AnimatePresence mode="wait">
               {copied ? (
@@ -66,7 +66,7 @@ export default function PromptCard({ prompt, index, delay = 0 }) {
                   exit={{ scale: 0.5, opacity: 0 }}
                   transition={{ duration: 0.15 }}
                 >
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <Check className="w-4 h-4 text-emerald-400" />
                 </motion.span>
               ) : (
                 <motion.span
@@ -76,7 +76,7 @@ export default function PromptCard({ prompt, index, delay = 0 }) {
                   exit={{ scale: 0.5, opacity: 0 }}
                   transition={{ duration: 0.15 }}
                 >
-                  <Copy className="w-3.5 h-3.5" />
+                  <Copy className="w-4 h-4" />
                 </motion.span>
               )}
             </AnimatePresence>
