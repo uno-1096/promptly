@@ -11,6 +11,11 @@ import GenerateButton from './components/GenerateButton'
 import PromptResults from './components/PromptResults'
 import HistorySidebar from './components/HistorySidebar'
 import PromptLibrarySidebar from './components/PromptLibrarySidebar'
+import ModeSwitcher from './components/ModeSwitcher'
+import ReferenceAssembly from './components/ReferenceAssembly'
+import ReferenceResults from './components/ReferenceResults'
+import VideoPromptGenerator from './components/VideoPromptGenerator'
+import VideoResults from './components/VideoResults'
 
 const HISTORY_KEY = 'promptly_history'
 const THEME_KEY = 'promptly_theme'
@@ -20,6 +25,11 @@ export default function App() {
   const [isDark, setIsDark] = useState(() => {
     try { return localStorage.getItem(THEME_KEY) !== 'light' } catch { return true }
   })
+
+  // App mode: 'image' | 'reference' | 'video'
+  const [appMode, setAppMode] = useState('image')
+
+  // Image Prompts state
   const [inputMode, setInputMode] = useState('image')
   const [images, setImages] = useState([])
   const [textDescription, setTextDescription] = useState('')
@@ -30,10 +40,29 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [results, setResults] = useState(null)
   const [batchLabels, setBatchLabels] = useState(null)
+  const [error, setError] = useState(null)
+
+  // History / Library state
   const [history, setHistory] = useState([])
   const [showHistory, setShowHistory] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
-  const [error, setError] = useState(null)
+
+  // Reference Assembly state
+  const [refImages, setRefImages] = useState([])
+  const [sceneDescription, setSceneDescription] = useState('')
+  const [refAspectRatio, setRefAspectRatio] = useState('1:1')
+  const [refStyleModifier, setRefStyleModifier] = useState('')
+  const [isRefGenerating, setIsRefGenerating] = useState(false)
+  const [referenceResult, setReferenceResult] = useState(null)
+  const [refError, setRefError] = useState(null)
+
+  // Video Prompt state
+  const [startingImage, setStartingImage] = useState(null)
+  const [videoDescription, setVideoDescription] = useState('')
+  const [videoStyleModifier, setVideoStyleModifier] = useState('')
+  const [isVideoGenerating, setIsVideoGenerating] = useState(false)
+  const [videoResult, setVideoResult] = useState(null)
+  const [videoError, setVideoError] = useState(null)
 
   useEffect(() => {
     if (isDark) {
@@ -144,6 +173,7 @@ export default function App() {
     setAspectRatio(entry.aspectRatio)
     setStyleModifier(entry.styleModifier || '')
     setShowHistory(false)
+    setAppMode('image')
   }
 
   const handleSavePrompt = async (promptData) => {
@@ -159,6 +189,51 @@ export default function App() {
     fd.append('lora_tags', JSON.stringify(promptData.lora_tags || []))
     await axios.post('/api/prompts/save', fd)
   }
+
+  const handleReferenceGenerate = useCallback(async () => {
+    if (refImages.length === 0 || !sceneDescription.trim()) return
+    setIsRefGenerating(true)
+    setRefError(null)
+    setReferenceResult(null)
+
+    try {
+      const fd = new FormData()
+      refImages.forEach((img) => fd.append('images', img.file))
+      fd.append('scene_description', sceneDescription)
+      fd.append('aspect_ratio', refAspectRatio)
+      fd.append('style_modifier', refStyleModifier)
+      const { data } = await axios.post('/api/analyze/reference', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setReferenceResult(data)
+    } catch (err) {
+      setRefError(err.response?.data?.detail || err.message || 'Something went wrong')
+    } finally {
+      setIsRefGenerating(false)
+    }
+  }, [refImages, sceneDescription, refAspectRatio, refStyleModifier])
+
+  const handleVideoGenerate = useCallback(async () => {
+    if (!videoDescription.trim()) return
+    setIsVideoGenerating(true)
+    setVideoError(null)
+    setVideoResult(null)
+
+    try {
+      const fd = new FormData()
+      fd.append('video_description', videoDescription)
+      if (startingImage) fd.append('starting_image', startingImage.file)
+      fd.append('style_modifier', videoStyleModifier)
+      const { data } = await axios.post('/api/analyze/video', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setVideoResult(data)
+    } catch (err) {
+      setVideoError(err.response?.data?.detail || err.message || 'Something went wrong')
+    } finally {
+      setIsVideoGenerating(false)
+    }
+  }, [startingImage, videoDescription, videoStyleModifier])
 
   return (
     <div className="min-h-screen relative bg-[#f4f4fb] dark:bg-[#06060f] transition-colors duration-300">
@@ -178,46 +253,146 @@ export default function App() {
         />
 
         <main className="flex-1 px-4 md:px-8 py-4 md:py-6 pb-safe max-w-7xl mx-auto w-full">
-          <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
-            <div className="w-full lg:w-[480px] flex-shrink-0 space-y-3">
-              <ImageUploader
-                images={images}
-                onImagesChange={setImages}
-                inputMode={inputMode}
-                onInputModeChange={setInputMode}
-                textDescription={textDescription}
-                onTextDescriptionChange={setTextDescription}
-              />
-              <PlatformSelector value={platform} onChange={setPlatform} />
-              <AspectRatioSelector value={aspectRatio} onChange={setAspectRatio} />
-              <StyleModifiers value={styleModifier} onChange={setStyleModifier} />
-              <PromptLengthSlider value={promptLength} onChange={setPromptLength} />
-              <GenerateButton onClick={handleGenerate} isGenerating={isGenerating} disabled={!canGenerate} />
+          <ModeSwitcher mode={appMode} onChange={setAppMode} />
 
-              <AnimatePresence>
-                {error && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 dark:text-red-300 text-sm"
-                  >
-                    {error}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+          <AnimatePresence mode="wait">
+            {appMode === 'image' && (
+              <motion.div
+                key="image"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+                  <div className="w-full lg:w-[480px] flex-shrink-0 space-y-3">
+                    <ImageUploader
+                      images={images}
+                      onImagesChange={setImages}
+                      inputMode={inputMode}
+                      onInputModeChange={setInputMode}
+                      textDescription={textDescription}
+                      onTextDescriptionChange={setTextDescription}
+                    />
+                    <PlatformSelector value={platform} onChange={setPlatform} />
+                    <AspectRatioSelector value={aspectRatio} onChange={setAspectRatio} />
+                    <StyleModifiers value={styleModifier} onChange={setStyleModifier} />
+                    <PromptLengthSlider value={promptLength} onChange={setPromptLength} />
+                    <GenerateButton onClick={handleGenerate} isGenerating={isGenerating} disabled={!canGenerate} />
 
-            <div className="flex-1 min-w-0">
-              <PromptResults
-                results={results}
-                batchLabels={batchLabels}
-                isLoading={isGenerating}
-                platform={platform}
-                onSavePrompt={handleSavePrompt}
-              />
-            </div>
-          </div>
+                    <AnimatePresence>
+                      {error && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -8 }}
+                          className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 dark:text-red-300 text-sm"
+                        >
+                          {error}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <PromptResults
+                      results={results}
+                      batchLabels={batchLabels}
+                      isLoading={isGenerating}
+                      platform={platform}
+                      onSavePrompt={handleSavePrompt}
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {appMode === 'reference' && (
+              <motion.div
+                key="reference"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+                  <div className="w-full lg:w-[480px] flex-shrink-0 space-y-3">
+                    <ReferenceAssembly
+                      refImages={refImages}
+                      onRefImagesChange={setRefImages}
+                      sceneDescription={sceneDescription}
+                      onSceneDescriptionChange={setSceneDescription}
+                      aspectRatio={refAspectRatio}
+                      onAspectRatioChange={setRefAspectRatio}
+                      styleModifier={refStyleModifier}
+                      onStyleModifierChange={setRefStyleModifier}
+                      onGenerate={handleReferenceGenerate}
+                      isGenerating={isRefGenerating}
+                    />
+
+                    <AnimatePresence>
+                      {refError && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -8 }}
+                          className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 dark:text-red-300 text-sm"
+                        >
+                          {refError}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <ReferenceResults result={referenceResult} isLoading={isRefGenerating} />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {appMode === 'video' && (
+              <motion.div
+                key="video"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+                  <div className="w-full lg:w-[480px] flex-shrink-0 space-y-3">
+                    <VideoPromptGenerator
+                      startingImage={startingImage}
+                      onStartingImageChange={setStartingImage}
+                      videoDescription={videoDescription}
+                      onVideoDescriptionChange={setVideoDescription}
+                      styleModifier={videoStyleModifier}
+                      onStyleModifierChange={setVideoStyleModifier}
+                      onGenerate={handleVideoGenerate}
+                      isGenerating={isVideoGenerating}
+                    />
+
+                    <AnimatePresence>
+                      {videoError && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -8 }}
+                          className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 dark:text-red-300 text-sm"
+                        >
+                          {videoError}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <VideoResults result={videoResult} isLoading={isVideoGenerating} />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </main>
       </div>
 

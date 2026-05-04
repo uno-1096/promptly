@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
 import anthropic
 import aiosqlite
 import base64
@@ -115,6 +116,91 @@ You always respond with valid JSON in exactly this format:
 CFG scale: 7 for balanced, 5-6 for artistic/dreamlike, 9-12 for photorealistic/precise.
 Steps: 20 for quick, 25 for standard, 30-35 for high detail.
 LoRA suggestions: add_detail for sharper detail, film_grain for cinematic, beautiful_eyes for portraits, ink_style for illustrations. Use empty array when no LoRAs fit."""
+
+
+REFERENCE_SYSTEM_PROMPT = """You are an expert AI image prompt engineer specializing in reference-based scene assembly. You receive multiple reference images (person, outfit, location, props, lighting, etc.) alongside a scene description. Analyze ALL reference images together and synthesize their visual elements into one coherent, complete prompt per platform.
+
+Combine: physical appearance from person references, outfit details from clothing references, environmental elements from location references, and any props or styling from additional references — all unified within the stated scene description.
+
+Respond with valid JSON in exactly this format:
+{
+  "gemini": {
+    "prompt": "Complete Gemini-optimized scene prompt combining all reference visuals and the scene description — poetic, evocative, narrative-rich",
+    "tags": ["tag1", "tag2", "tag3", "tag4"]
+  },
+  "chatgpt": {
+    "prompt": "Complete DALL-E/ChatGPT-optimized prompt — structured, technical, precise with comma-separated descriptors",
+    "tags": ["tag1", "tag2", "tag3", "tag4"]
+  },
+  "kling": {
+    "prompt": "Complete Kling video-optimized prompt including specific camera movement descriptions",
+    "camera_movement": "specific camera movement for this scene",
+    "tags": ["tag1", "tag2", "tag3", "tag4"]
+  },
+  "stable_diffusion": {
+    "prompt": "masterpiece, best quality, detailed SD prompt combining all references",
+    "negative_prompt": "lowres, bad anatomy, bad hands, blurry",
+    "cfg_scale": 7,
+    "sampler": "DPM++ 2M Karras",
+    "steps": 25,
+    "lora_tags": [],
+    "tags": ["tag1", "tag2", "tag3"]
+  },
+  "negative_prompt": "general elements to avoid across all platforms, quality issues, artifacts"
+}
+
+CFG scale: 7 balanced, 5-6 artistic, 9-12 photorealistic. Steps: 20 quick, 25 standard, 30-35 high detail.
+Respond ONLY with the JSON object — no markdown, no explanation."""
+
+VIDEO_SYSTEM_PROMPT = """You are an expert AI video prompt engineer with deep knowledge of text-to-video generation models. Analyze a scene description and optional starting frame to generate platform-optimized video prompts for Kling, Sora, Runway, and Pika.
+
+Platform strengths:
+- Kling: cinematic shots, fluid camera movements, realistic human motion
+- Sora (OpenAI): long duration, complex scenes, realistic physics, cinematic quality
+- Runway Gen-3: stylized visuals, creative effects, shorter precise clips
+- Pika Labs: dynamic action, expressive character motion, fast generation
+
+Respond with valid JSON in exactly this format:
+{
+  "kling": {
+    "prompt": "Complete optimized prompt for Kling AI",
+    "camera_movement": "specific camera movement (e.g. slow dolly forward, tracking shot right)",
+    "subject_motion": "how the subject/scene moves",
+    "lighting": "lighting description",
+    "transitions": "cut or transition style",
+    "duration": "4-6 seconds",
+    "tags": ["tag1", "tag2", "tag3"]
+  },
+  "sora": {
+    "prompt": "Complete optimized prompt for Sora",
+    "camera_movement": "specific camera movement",
+    "subject_motion": "subject/scene motion",
+    "lighting": "lighting",
+    "transitions": "transitions",
+    "duration": "8-15 seconds",
+    "tags": ["tag1", "tag2", "tag3"]
+  },
+  "runway": {
+    "prompt": "Complete optimized prompt for Runway Gen-3",
+    "camera_movement": "specific camera movement",
+    "subject_motion": "subject/scene motion",
+    "lighting": "lighting",
+    "transitions": "transitions",
+    "duration": "3-5 seconds",
+    "tags": ["tag1", "tag2", "tag3"]
+  },
+  "pika": {
+    "prompt": "Complete optimized prompt for Pika Labs",
+    "camera_movement": "specific camera movement",
+    "subject_motion": "subject/scene motion",
+    "lighting": "lighting",
+    "transitions": "transitions",
+    "duration": "3-4 seconds",
+    "tags": ["tag1", "tag2", "tag3"]
+  }
+}
+
+Respond ONLY with the JSON object — no markdown, no explanation."""
 
 
 async def init_db():
@@ -304,6 +390,94 @@ async def delete_prompt(prompt_id: int):
         await db.execute("DELETE FROM saved_prompts WHERE id = ?", (prompt_id,))
         await db.commit()
     return {"ok": True}
+
+
+@app.post("/analyze/reference")
+async def analyze_reference(
+    images: List[UploadFile] = File(...),
+    scene_description: str = Form(...),
+    aspect_ratio: str = Form("1:1"),
+    style_modifier: str = Form(""),
+):
+    if not images:
+        raise HTTPException(status_code=400, detail="At least one reference image is required")
+    if len(images) > 8:
+        raise HTTPException(status_code=400, detail="Maximum 8 reference images allowed")
+
+    content = []
+    for i, image in enumerate(images):
+        image_data = await image.read()
+        image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
+        content_type = image.content_type or "image/jpeg"
+        if content_type not in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
+            content_type = "image/jpeg"
+        content.append({"type": "image", "source": {"type": "base64", "media_type": content_type, "data": image_b64}})
+        content.append({"type": "text", "text": f"Reference image {i + 1}"})
+
+    style_note = f"\nApply a {style_modifier} aesthetic treatment." if style_modifier else ""
+    content.append({"type": "text", "text": f"""Scene description: {scene_description}
+
+I've provided {len(images)} reference image(s). Analyze ALL of them together and combine their visual elements (appearance, outfit, location, props, etc.) with the scene description to generate one optimized prompt per platform.
+
+Target aspect ratio: {aspect_ratio}{style_note}
+
+Respond ONLY with the JSON object — no markdown, no explanation."""})
+
+    try:
+        msg = client.messages.create(
+            model=MODEL,
+            max_tokens=3000,
+            system=REFERENCE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": content}],
+        )
+        return _parse_response(msg.content[0].text)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+    except anthropic.APIError as e:
+        raise HTTPException(status_code=500, detail=f"AI API error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze/video")
+async def analyze_video(
+    video_description: str = Form(...),
+    starting_image: Optional[UploadFile] = File(None),
+    style_modifier: str = Form(""),
+):
+    content = []
+    has_image = starting_image is not None and starting_image.filename not in (None, "")
+
+    if has_image:
+        image_data = await starting_image.read()
+        image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
+        content_type = starting_image.content_type or "image/jpeg"
+        if content_type not in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
+            content_type = "image/jpeg"
+        content.append({"type": "image", "source": {"type": "base64", "media_type": content_type, "data": image_b64}})
+
+    style_note = f"\nApply a {style_modifier} aesthetic treatment." if style_modifier else ""
+    image_note = "I've provided a starting frame image above — use it as the visual basis for the video.\n\n" if has_image else ""
+    content.append({"type": "text", "text": f"""{image_note}Video description: {video_description}
+
+Generate optimized video prompts for Kling, Sora, Runway, and Pika. Each must specify camera movement, subject motion, lighting, transitions, and duration.{style_note}
+
+Respond ONLY with the JSON object — no markdown, no explanation."""})
+
+    try:
+        msg = client.messages.create(
+            model=MODEL,
+            max_tokens=3000,
+            system=VIDEO_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": content}],
+        )
+        return _parse_response(msg.content[0].text)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+    except anthropic.APIError as e:
+        raise HTTPException(status_code=500, detail=f"AI API error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
