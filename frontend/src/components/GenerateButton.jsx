@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles, Loader2 } from 'lucide-react'
 
 const MESSAGES = [
-  'Analyzing your image...',
+  'Analyzing your input...',
   'Crafting prompt variations...',
   'Optimizing for platform...',
   'Applying style touches...',
@@ -31,9 +31,9 @@ export default function GenerateButton({ onClick, isGenerating, disabled }) {
       whileTap={!isDisabled ? { scale: 0.985 } : {}}
       className={`relative w-full h-14 rounded-2xl font-semibold text-sm overflow-hidden transition-all duration-300 ${
         disabled
-          ? 'opacity-35 cursor-not-allowed bg-white/[0.04] border border-white/[0.08] text-white/40'
+          ? 'opacity-35 cursor-not-allowed bg-black/[0.04] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] text-gray-400 dark:text-white/40'
           : isGenerating
-          ? 'cursor-wait bg-violet-600/15 border border-violet-500/25 text-violet-200'
+          ? 'cursor-wait bg-violet-600/15 border border-violet-500/25 text-violet-600 dark:text-violet-200'
           : 'bg-gradient-to-r from-violet-600 to-blue-600 text-white shadow-xl shadow-violet-500/20 hover:shadow-violet-500/30'
       }`}
     >

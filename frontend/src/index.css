@@ -2,8 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+html {
   color-scheme: dark;
+}
+
+html:not(.dark) {
+  color-scheme: light;
 }
 
 body {
@@ -13,8 +17,8 @@ body {
   font-family: 'Inter', system-ui, sans-serif;
   color: white;
   overflow-x: hidden;
-  /* prevent iOS rubber-band scroll on the root */
   overscroll-behavior: none;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 @layer base {
@@ -37,18 +41,43 @@ body {
   border-radius: 10px;
 }
 
+html:not(.dark) ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
+
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
 }
 
+html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
 @layer components {
   .glass-panel {
-    @apply bg-white/[0.03] backdrop-blur-xl border border-white/[0.07] rounded-2xl;
+    @apply backdrop-blur-xl rounded-2xl;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
   }
 
   .glass-panel-hover {
-    @apply glass-panel transition-all duration-200 hover:bg-white/[0.05] hover:border-white/[0.12];
+    @apply glass-panel transition-all duration-200;
   }
+
+  .glass-panel-hover:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+}
+
+html:not(.dark) .glass-panel {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+html:not(.dark) .glass-panel-hover:hover {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(0, 0, 0, 0.13);
 }
 
 @layer utilities {
@@ -62,12 +91,10 @@ body {
     background-size: 200% 100%;
   }
 
-  /* iOS safe-area bottom padding */
   .pb-safe {
     padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 1.5rem));
   }
 
-  /* Momentum scrolling on iOS */
   .scroll-ios {
     -webkit-overflow-scrolling: touch;
   }

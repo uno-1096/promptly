@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Sparkles, MessageSquare, Play } from 'lucide-react'
+import { Sparkles, MessageSquare, Play, Layers } from 'lucide-react'
 
 const PLATFORMS = [
   {
@@ -26,15 +26,23 @@ const PLATFORMS = [
     shadow: '0 0 24px rgba(139,92,246,0.3)',
     Icon: Play,
   },
+  {
+    id: 'stable_diffusion',
+    name: 'Stable Diffusion',
+    tagline: 'SD params & LoRA',
+    gradient: 'from-orange-500 to-amber-400',
+    shadow: '0 0 24px rgba(249,115,22,0.3)',
+    Icon: Layers,
+  },
 ]
 
 export default function PlatformSelector({ value, onChange }) {
   return (
     <div className="glass-panel p-4">
-      <p className="text-white/35 text-[11px] font-semibold uppercase tracking-widest mb-3">
+      <p className="text-gray-500 dark:text-white/35 text-[11px] font-semibold uppercase tracking-widest mb-3">
         Platform
       </p>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {PLATFORMS.map(({ id, name, tagline, gradient, shadow, Icon }) => {
           const selected = value === id
           return (
@@ -47,31 +55,26 @@ export default function PlatformSelector({ value, onChange }) {
               className={`relative p-3 rounded-xl border text-left overflow-hidden transition-all duration-300 ${
                 selected
                   ? 'border-white/20 bg-white/[0.06]'
-                  : 'border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10'
+                  : 'border-black/[0.06] dark:border-white/[0.06] bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/10 dark:hover:border-white/10'
               }`}
             >
-              <AnimatedBackground show={selected} gradient={gradient} />
+              {selected && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className={`absolute inset-0 bg-gradient-to-br ${gradient} opacity-[0.08]`}
+                />
+              )}
               <div className={`relative inline-flex p-1.5 rounded-lg bg-gradient-to-br ${gradient} mb-2.5`}>
                 <Icon className="w-3.5 h-3.5 text-white" />
               </div>
-              <p className="relative text-white text-xs font-semibold leading-tight">{name}</p>
-              <p className="relative text-white/35 text-[11px] mt-0.5 leading-tight">{tagline}</p>
+              <p className="relative text-gray-900 dark:text-white text-xs font-semibold leading-tight">{name}</p>
+              <p className="relative text-gray-400 dark:text-white/35 text-[11px] mt-0.5 leading-tight">{tagline}</p>
             </motion.button>
           )
         })}
       </div>
     </div>
-  )
-}
-
-function AnimatedBackground({ show, gradient }) {
-  if (!show) return null
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className={`absolute inset-0 bg-gradient-to-br ${gradient} opacity-[0.08]`}
-    />
   )
 }
