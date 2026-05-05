@@ -1,27 +1,82 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
-import anthropic
-import aiosqlite
 import base64
 import json
+import logging
 import os
+import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
+from typing import List, Optional
 
-app = FastAPI(title="Promptly API")
+import aiosqlite
+import anthropic
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
+# ── Startup: fail fast if key is missing ──────────────────────────────────────
+_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+if not _api_key:
+    raise RuntimeError("ANTHROPIC_API_KEY environment variable is required")
+
+# ── Privacy-safe logging — no user content ever logged ───────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("promptly")
+
+# ── Rate limiting (per source IP) ─────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+# ── App — docs/schema hidden in production ────────────────────────────────────
+app = FastAPI(title="Promptly API", docs_url=None, redoc_url=None, openapi_url=None)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── CORS — only the production origin (or overridden via env) ─────────────────
+_allowed_origins = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", "https://prompt.unocloud.us").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-Request-ID"],
 )
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-MODEL = "claude-sonnet-4-6"
-DB_PATH = Path("./prompts.db")
+# ── Clients / config ──────────────────────────────────────────────────────────
+client = anthropic.Anthropic(api_key=_api_key)
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+DB_PATH = Path(os.environ.get("DB_PATH", "./prompts.db"))
+
+# ── Upload limits ─────────────────────────────────────────────────────────────
+MAX_FILE_BYTES = 10 * 1024 * 1024    # 10 MB per file
+MAX_TOTAL_BYTES = 50 * 1024 * 1024   # 50 MB for batch uploads
+MAX_IMAGE_DIMENSION = 8000            # pixels — reject gigapixel bombs
+
+_ALLOWED_PIL_FORMATS = {"JPEG", "PNG", "GIF", "WEBP"}
+_PIL_TO_MIME = {
+    "JPEG": "image/jpeg",
+    "PNG":  "image/png",
+    "GIF":  "image/gif",
+    "WEBP": "image/webp",
+}
+
+# ── Input length caps ─────────────────────────────────────────────────────────
+MAX_DESCRIPTION_LEN    = 2000
+MAX_SCENE_DESC_LEN     = 2000
+MAX_VIDEO_DESC_LEN     = 2000
+MAX_LABEL_LEN          = 200
+MAX_PROMPT_TEXT_LEN    = 5000
+MAX_STYLE_MODIFIER_LEN = 200
+MAX_SEARCH_LEN         = 100
 
 PLATFORM_CONFIGS = {
     "gemini": {
@@ -203,7 +258,55 @@ Respond with valid JSON in exactly this format:
 Respond ONLY with the JSON object — no markdown, no explanation."""
 
 
+# ── Security middleware: inject request ID + hardening headers ─────────────────
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = str(uuid.uuid4())
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Server"] = "promptly"
+    return response
+
+
+# ── Image validation (magic bytes via Pillow + dimension check) ────────────────
+def _validate_image(data: bytes, rid: str) -> str:
+    """Validate image bytes. Returns MIME type. Never logs user content."""
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 10 MB limit")
+    try:
+        img = Image.open(BytesIO(data))
+        fmt = img.format
+        if fmt not in _ALLOWED_PIL_FORMATS:
+            raise HTTPException(status_code=400, detail="Unsupported image format")
+        w, h = img.size
+        if w > MAX_IMAGE_DIMENSION or h > MAX_IMAGE_DIMENSION:
+            raise HTTPException(status_code=400, detail="Image dimensions too large")
+        img.load()
+        img.close()
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("image validation failed rid=%s", rid)
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    return _PIL_TO_MIME[fmt]
+
+
+def _sanitize_text(text: str, max_len: int) -> str:
+    """Strip C0/C1 control chars; keep printable ASCII and unicode >= 160."""
+    text = text[:max_len]
+    return "".join(
+        ch for ch in text
+        if ch in ("\t", "\n", "\r") or (32 <= ord(ch) <= 126) or ord(ch) >= 160
+    ).strip()
+
+
+# ── DB init ───────────────────────────────────────────────────────────────────
 async def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS saved_prompts (
@@ -256,28 +359,36 @@ def _parse_response(text: str) -> dict:
     return json.loads(text)
 
 
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.post("/analyze")
+@limiter.limit("20/minute")
 async def analyze_image(
+    request: Request,
     image: UploadFile = File(...),
     platform: str = Form(...),
     aspect_ratio: str = Form("1:1"),
     style_modifier: str = Form(""),
     prompt_length: str = Form("medium"),
 ):
+    rid = str(uuid.uuid4())
     if platform not in PLATFORM_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    if prompt_length not in LENGTH_CONFIGS:
+        raise HTTPException(status_code=400, detail="Invalid prompt length")
+    style_modifier = _sanitize_text(style_modifier, MAX_STYLE_MODIFIER_LEN)
 
-    image_data = await image.read()
-    image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
-    content_type = image.content_type or "image/jpeg"
-    if content_type not in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
-        content_type = "image/jpeg"
+    raw = await image.read()
+    mime = _validate_image(raw, rid)
+    image_b64 = base64.standard_b64encode(raw).decode("utf-8")
+    del raw
 
     cfg = PLATFORM_CONFIGS[platform]
     user_message = _build_user_prompt(cfg, aspect_ratio, style_modifier, prompt_length, "this image")
     system = SD_SYSTEM_PROMPT if platform == "stable_diffusion" else SYSTEM_PROMPT
     max_tokens = 3500 if prompt_length == "long" else 2048
 
+    logger.info("analyze rid=%s platform=%s", rid, platform)
     try:
         msg = client.messages.create(
             model=MODEL,
@@ -286,36 +397,50 @@ async def analyze_image(
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": content_type, "data": image_b64}},
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_b64}},
                     {"type": "text", "text": user_message},
                 ],
             }],
         )
         return _parse_response(msg.content[0].text)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
-    except anthropic.APIError as e:
-        raise HTTPException(status_code=500, detail=f"AI API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except json.JSONDecodeError:
+        logger.error("json parse error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Failed to process AI response")
+    except anthropic.APIError:
+        logger.error("anthropic api error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="AI service error")
+    except Exception:
+        logger.exception("unexpected error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/analyze/text")
+@limiter.limit("20/minute")
 async def analyze_text(
+    request: Request,
     description: str = Form(...),
     platform: str = Form(...),
     aspect_ratio: str = Form("1:1"),
     style_modifier: str = Form(""),
     prompt_length: str = Form("medium"),
 ):
+    rid = str(uuid.uuid4())
     if platform not in PLATFORM_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    if prompt_length not in LENGTH_CONFIGS:
+        raise HTTPException(status_code=400, detail="Invalid prompt length")
+
+    description = _sanitize_text(description, MAX_DESCRIPTION_LEN)
+    style_modifier = _sanitize_text(style_modifier, MAX_STYLE_MODIFIER_LEN)
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required")
 
     cfg = PLATFORM_CONFIGS[platform]
     system = SD_SYSTEM_PROMPT if platform == "stable_diffusion" else SYSTEM_PROMPT
     user_message = _build_user_prompt(cfg, aspect_ratio, style_modifier, prompt_length, "this description")
     max_tokens = 3500 if prompt_length == "long" else 2048
 
+    logger.info("analyze/text rid=%s platform=%s", rid, platform)
     try:
         msg = client.messages.create(
             model=MODEL,
@@ -327,16 +452,21 @@ async def analyze_text(
             }],
         )
         return _parse_response(msg.content[0].text)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
-    except anthropic.APIError as e:
-        raise HTTPException(status_code=500, detail=f"AI API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except json.JSONDecodeError:
+        logger.error("json parse error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Failed to process AI response")
+    except anthropic.APIError:
+        logger.error("anthropic api error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="AI service error")
+    except Exception:
+        logger.exception("unexpected error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/prompts/save")
+@limiter.limit("30/minute")
 async def save_prompt(
+    request: Request,
     platform: str = Form(...),
     label: str = Form(""),
     prompt_text: str = Form(...),
@@ -347,6 +477,44 @@ async def save_prompt(
     steps: str = Form(""),
     lora_tags: str = Form("[]"),
 ):
+    if platform not in PLATFORM_CONFIGS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    label         = _sanitize_text(label, MAX_LABEL_LEN)
+    prompt_text   = _sanitize_text(prompt_text, MAX_PROMPT_TEXT_LEN)
+    negative_prompt = _sanitize_text(negative_prompt, MAX_PROMPT_TEXT_LEN)
+    if not prompt_text:
+        raise HTTPException(status_code=400, detail="Prompt text is required")
+
+    try:
+        json.loads(tags)
+    except json.JSONDecodeError:
+        tags = "[]"
+    try:
+        json.loads(lora_tags)
+    except json.JSONDecodeError:
+        lora_tags = "[]"
+
+    cfg_scale_int: Optional[int] = None
+    steps_int: Optional[int] = None
+    sampler_val: Optional[str] = None
+    if cfg_scale:
+        try:
+            cfg_scale_int = int(cfg_scale)
+            if not (1 <= cfg_scale_int <= 30):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid cfg_scale")
+    if steps:
+        try:
+            steps_int = int(steps)
+            if not (1 <= steps_int <= 150):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid steps value")
+    if sampler:
+        sampler_val = _sanitize_text(sampler, 50)
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO saved_prompts
@@ -359,9 +527,9 @@ async def save_prompt(
                 prompt_text,
                 tags,
                 negative_prompt,
-                int(cfg_scale) if cfg_scale else None,
-                sampler or None,
-                int(steps) if steps else None,
+                cfg_scale_int,
+                sampler_val,
+                steps_int,
                 lora_tags,
             ),
         )
@@ -370,49 +538,73 @@ async def save_prompt(
 
 
 @app.get("/prompts")
-async def list_prompts(q: str = ""):
+@limiter.limit("60/minute")
+async def list_prompts(
+    request: Request,
+    q: str = Query("", max_length=100),
+):
+    q = _sanitize_text(q, MAX_SEARCH_LEN)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         if q:
             cursor = await db.execute(
-                "SELECT * FROM saved_prompts WHERE prompt_text LIKE ? OR tags LIKE ? OR platform LIKE ? ORDER BY created_at DESC",
+                "SELECT * FROM saved_prompts WHERE prompt_text LIKE ? OR tags LIKE ? OR platform LIKE ? ORDER BY created_at DESC LIMIT 200",
                 (f"%{q}%", f"%{q}%", f"%{q}%"),
             )
         else:
-            cursor = await db.execute("SELECT * FROM saved_prompts ORDER BY created_at DESC")
+            cursor = await db.execute("SELECT * FROM saved_prompts ORDER BY created_at DESC LIMIT 200")
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
 
 @app.delete("/prompts/{prompt_id}")
-async def delete_prompt(prompt_id: int):
+@limiter.limit("30/minute")
+async def delete_prompt(request: Request, prompt_id: int):
+    if prompt_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid prompt ID")
     async with aiosqlite.connect(DB_PATH) as db:
+        row = await (await db.execute("SELECT id FROM saved_prompts WHERE id = ?", (prompt_id,))).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Prompt not found")
         await db.execute("DELETE FROM saved_prompts WHERE id = ?", (prompt_id,))
         await db.commit()
     return {"ok": True}
 
 
 @app.post("/analyze/reference")
+@limiter.limit("10/minute")
 async def analyze_reference(
+    request: Request,
     images: List[UploadFile] = File(...),
     scene_description: str = Form(...),
     aspect_ratio: str = Form("1:1"),
     style_modifier: str = Form(""),
 ):
+    rid = str(uuid.uuid4())
     if not images:
         raise HTTPException(status_code=400, detail="At least one reference image is required")
     if len(images) > 8:
         raise HTTPException(status_code=400, detail="Maximum 8 reference images allowed")
 
+    scene_description = _sanitize_text(scene_description, MAX_SCENE_DESC_LEN)
+    style_modifier    = _sanitize_text(style_modifier, MAX_STYLE_MODIFIER_LEN)
+    if not scene_description:
+        raise HTTPException(status_code=400, detail="Scene description is required")
+
+    total_bytes = 0
     content = []
-    for i, image in enumerate(images):
-        image_data = await image.read()
-        image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
-        content_type = image.content_type or "image/jpeg"
-        if content_type not in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
-            content_type = "image/jpeg"
-        content.append({"type": "image", "source": {"type": "base64", "media_type": content_type, "data": image_b64}})
+    for i, img_file in enumerate(images):
+        raw = await img_file.read()
+        total_bytes += len(raw)
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise HTTPException(status_code=413, detail="Total upload size exceeds 50 MB")
+        mime = _validate_image(raw, f"{rid}-{i}")
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": base64.standard_b64encode(raw).decode("utf-8")},
+        })
         content.append({"type": "text", "text": f"Reference image {i + 1}"})
+        del raw
 
     style_note = f"\nApply a {style_modifier} aesthetic treatment." if style_modifier else ""
     content.append({"type": "text", "text": f"""Scene description: {scene_description}
@@ -423,6 +615,7 @@ Target aspect ratio: {aspect_ratio}{style_note}
 
 Respond ONLY with the JSON object — no markdown, no explanation."""})
 
+    logger.info("analyze/reference rid=%s images=%d", rid, len(images))
     try:
         msg = client.messages.create(
             model=MODEL,
@@ -431,39 +624,52 @@ Respond ONLY with the JSON object — no markdown, no explanation."""})
             messages=[{"role": "user", "content": content}],
         )
         return _parse_response(msg.content[0].text)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
-    except anthropic.APIError as e:
-        raise HTTPException(status_code=500, detail=f"AI API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except json.JSONDecodeError:
+        logger.error("json parse error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Failed to process AI response")
+    except anthropic.APIError:
+        logger.error("anthropic api error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="AI service error")
+    except Exception:
+        logger.exception("unexpected error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/analyze/video")
+@limiter.limit("10/minute")
 async def analyze_video(
+    request: Request,
     video_description: str = Form(...),
     starting_image: Optional[UploadFile] = File(None),
     style_modifier: str = Form(""),
 ):
+    rid = str(uuid.uuid4())
+    video_description = _sanitize_text(video_description, MAX_VIDEO_DESC_LEN)
+    style_modifier    = _sanitize_text(style_modifier, MAX_STYLE_MODIFIER_LEN)
+    if not video_description:
+        raise HTTPException(status_code=400, detail="Video description is required")
+
     content = []
     has_image = starting_image is not None and starting_image.filename not in (None, "")
 
     if has_image:
-        image_data = await starting_image.read()
-        image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
-        content_type = starting_image.content_type or "image/jpeg"
-        if content_type not in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
-            content_type = "image/jpeg"
-        content.append({"type": "image", "source": {"type": "base64", "media_type": content_type, "data": image_b64}})
+        raw = await starting_image.read()
+        mime = _validate_image(raw, rid)
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": base64.standard_b64encode(raw).decode("utf-8")},
+        })
+        del raw
 
-    style_note = f"\nApply a {style_modifier} aesthetic treatment." if style_modifier else ""
-    image_note = "I've provided a starting frame image above — use it as the visual basis for the video.\n\n" if has_image else ""
+    style_note  = f"\nApply a {style_modifier} aesthetic treatment." if style_modifier else ""
+    image_note  = "I've provided a starting frame image above — use it as the visual basis for the video.\n\n" if has_image else ""
     content.append({"type": "text", "text": f"""{image_note}Video description: {video_description}
 
 Generate optimized video prompts for Kling, Sora, Runway, and Pika. Each must specify camera movement, subject motion, lighting, transitions, and duration.{style_note}
 
 Respond ONLY with the JSON object — no markdown, no explanation."""})
 
+    logger.info("analyze/video rid=%s has_image=%s", rid, has_image)
     try:
         msg = client.messages.create(
             model=MODEL,
@@ -472,12 +678,15 @@ Respond ONLY with the JSON object — no markdown, no explanation."""})
             messages=[{"role": "user", "content": content}],
         )
         return _parse_response(msg.content[0].text)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
-    except anthropic.APIError as e:
-        raise HTTPException(status_code=500, detail=f"AI API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except json.JSONDecodeError:
+        logger.error("json parse error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Failed to process AI response")
+    except anthropic.APIError:
+        logger.error("anthropic api error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="AI service error")
+    except Exception:
+        logger.exception("unexpected error rid=%s", rid)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/health")
